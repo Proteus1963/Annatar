@@ -15,11 +15,11 @@ services:
       - "redis_data:/app/data"
     environment:
       LOG_LEVEL: debug
-      JACKETT_URL: "http://jackett:9117"
-      JACKETT_API_KEY: "<Set this value from Jackett>"
+      JACKETT_URL: "http://85.61.137.47:9117"
+      JACKETT_API_KEY: "sro9ybsw7bign818vygiu8t4rwrtewke"
       JACKETT_MAX_RESULTS: "10" # max results from jackett search
-      JACKETT_TIMEOUT: "5" # max time spent searching per indexer.
-      JACKETT_INDEXERS: "eztv,kickasstorrents-ws,thepiratebay,therarbg,torrentgalaxy,yts"
+      JACKETT_TIMEOUT: "10" # max time spent searching per indexer.
+      JACKETT_INDEXERS: "Il Corsaro Nero,ItaTorrents,MIRCrew"
       LISTEN_PORT: "8000"
 
   jackett:
