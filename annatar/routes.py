@@ -54,8 +54,8 @@ async def get_manifest(request: Request) -> dict[str, Any]:
         "idPrefixes": ["tt"],
         "resources": ["stream"],
         "types": MediaType.all(),
-        "name": "Annatar",
-        "description": "Lord of Gifts. Search popular torrent sites and Debrid caches for streamable content.",
+        "name": "Pr0T3uS",
+        "description": "Search popular torrent sites and Debrid caches for streamable content.",
         "behaviorHints": {
             "configurable": True,
             "configurationRequired": False,
