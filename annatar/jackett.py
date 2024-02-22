@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 from datetime import datetime, timedelta
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, Optional
 
 import aiohttp
 import structlog
@@ -13,18 +13,17 @@ from annatar import human, instrumentation
 from annatar.database import db
 from annatar.debrid import magnet
 from annatar.jackett_models import (
-    MOVIES,
-    SERIES,
     Indexer,
-    ScoredTorrent,
     SearchQuery,
     SearchResult,
     SearchResults,
+    Torrents,
 )
+from annatar.torrent import Torrent
 
 log = structlog.get_logger(__name__)
 
-MAX_RESULTS_PER_INDEXER = int(os.environ.get("JACKETT_MAX_RESULTS", 50))
+MAX_RESULTS = int(os.environ.get("JACKETT_MAX_RESULTS", 10))
 JACKETT_TIMEOUT = int(os.environ.get("JACKETT_TIMEOUT", 5))
 
 
@@ -32,7 +31,7 @@ REQUEST_DURATION = Histogram(
     name="jackett_request_duration_seconds",
     documentation="Duration of Jackett requests in seconds",
     labelnames=["method", "indexer", "status", "cached"],
-    registry=instrumentation.registry(),
+    registry=instrumentation.REGISTRY,
 )
 
 
@@ -45,30 +44,32 @@ async def search_indexer(
     jackett_url: str,
     jackett_api_key: str,
     indexer: str,
-    cache_key: str,
     imdb: int | None = None,
-) -> list[str]:
+) -> list[Torrent]:
     suffix: str = "" if search_query.type == "series" else f"{search_query.year}"
-    sanitized_name: str = re.sub(r"\W", " ", search_query.name)
-    category: str = str(MOVIES.id if search_query.type == "movie" else SERIES.id)
+    cache_key: str = ":".join(
+        [
+            f"jackett:indexer:{indexer}:search:{search_query.type}:{search_query.name}",
+            suffix,
+        ]
+    )
+    cached_torrents: Torrents | None = await db.get_model(cache_key, Torrents)
+    if cached_torrents:
+        return cached_torrents.items
 
-    torrents: list[str] = []
-    try:
-        raw_results: list[SearchResult] = await execute_search(
-            jackett_api_key=jackett_api_key,
-            jackett_url=jackett_url,
-            indexer=indexer,
-            params={
-                "Category": category,
-                "Query": f"{sanitized_name} {suffix}",
-                "Tracker[]": indexer,
-            },
-        )
-    except JackettSearchError:
-        # if the search fails, we will cache the empty result for a short time
-        # to avoid hammering the indexer
-        # Don't log because we already logged in execute_search
-        return torrents
+    sanitized_name: str = re.sub(r"\W", " ", search_query.name)
+    category: str = "2000" if search_query.type == "movie" else "5000"
+
+    raw_results: list[SearchResult] = await execute_search(
+        jackett_api_key=jackett_api_key,
+        jackett_url=jackett_url,
+        indexer=indexer,
+        params={
+            "Category": category,
+            "Query": f"{sanitized_name} {suffix}",
+            "Tracker[]": indexer,
+        },
+    )
 
     search_results: list[SearchResult] = sorted(
         raw_results,
@@ -76,35 +77,41 @@ async def search_indexer(
         reverse=True,
     )
 
+    torrents: dict[str, Torrent] = {}
     tasks = [
         asyncio.create_task(map_matched_result(result=result, search_query=search_query, imdb=imdb))
         for result in search_results
     ]
 
-    scored_torrents: list[ScoredTorrent] = []
-    for i, task in enumerate(asyncio.as_completed(tasks)):
-        torrent: ScoredTorrent | None = await task
-        if torrent and torrent.score > 0:
-            if await db.unique_list_add(
-                name=cache_key,
-                item=torrent.info_hash,
-                score=torrent.score,
-            ):
-                log.info("added scored torrent to unique list", torrent=torrent)
-                scored_torrents.append(torrent)
-                if i > MAX_RESULTS_PER_INDEXER:
-                    # back off once we have what we need
-                    # doing this here so that the loop will continue for tasks
-                    # that have already completed
-                    for t in tasks:
-                        if not t.done():
-                            t.cancel()
+    for task in asyncio.as_completed(tasks):
+        torrent: Optional[Torrent] = await task
+        if torrent and human.score_name(search_query, torrent.title) > 0:
+            torrents[torrent.info_hash] = torrent
+            await db.set_model(
+                key=f"torrent:{torrent.info_hash}", model=torrent, ttl=timedelta(weeks=8)
+            )
+            log.info(
+                "found a torrent",
+                tracker=indexer,
+                info_hash=torrent.info_hash,
+                title=torrent.title,
+                seeders=torrent.seeders,
+            )
 
-    prioritized_list: list[str] = [
-        t.info_hash for t in sorted(list(scored_torrents), key=lambda t: t.score, reverse=True)
-    ]
+    # prioritize items by quality
+    prioritized_list: list[Torrent] = list(
+        sorted(
+            list(torrents.values()),
+            key=lambda t: human.score_name(
+                search_query,
+                t.title,
+            ),
+            reverse=True,
+        )
+    )
 
-    log.info("found torrents in indexer", tracker=indexer, count=len(prioritized_list))
+    await db.set_model(cache_key, Torrents(items=prioritized_list), ttl=timedelta(days=7))
+
     return prioritized_list
 
 
@@ -116,20 +123,9 @@ async def search_indexers(
     imdb: int | None = None,
     timeout: int = 60,
     indexers: list[Indexer] = Indexer.all(),
-) -> AsyncGenerator[str, None]:
+) -> list[Torrent]:
     log.info("searching indexers", indexers=indexers)
-    cache_key: str = f"jackett:search:tt{imdb}"
-    torrents: list[str] = await db.unique_list_get(cache_key)
-
-    if len(torrents) >= MAX_RESULTS_PER_INDEXER:
-        log.info("found enough torrents in cache", count=len(torrents))
-        for i, info_hash in enumerate(torrents):
-            yield info_hash
-            if i >= max_results:
-                return
-        return
-
-    # the list is not long enough, we need to search for more
+    torrents: dict[str, Torrent] = {}
     tasks = [
         asyncio.create_task(
             search_indexer(
@@ -138,55 +134,23 @@ async def search_indexers(
                 jackett_api_key=jackett_api_key,
                 imdb=imdb,
                 indexer=indexer.id,
-                cache_key=cache_key,
             )
         )
         for indexer in indexers
-        if indexer.supports(search_query.type)
     ]
-
-    await gather_indexer_results(tasks)
-
-    # now get the prioritized list from the cache because we can't reprioritize
-    # now that we lost the scores. Redis will keep the order for us
-    prioritized_list: list[str] = await db.unique_list_get(cache_key)
-
-    # cache for longer if we found enough data
-    ttl: timedelta = (
-        timedelta(minutes=15)
-        if len(prioritized_list) < MAX_RESULTS_PER_INDEXER
-        else timedelta(hours=6)
-    )
-
-    await db.set_ttl(cache_key, ttl)
-    for i, info_hash in enumerate(prioritized_list):
-        yield info_hash
-        if i >= max_results:
-            return
-
-    log.info("finished searching indexers", count=len(prioritized_list))
-
-
-async def gather_indexer_results(tasks: list[asyncio.Task[list[str]]]):
-    info_hashes: dict[str, bool] = {}
     for task in asyncio.as_completed(tasks):
-        indexer_results: list[str] = await task
-        for info_hash in indexer_results[:MAX_RESULTS_PER_INDEXER]:
-            if not info_hash:
-                continue
-            if info_hash in info_hashes:
-                continue
-            info_hashes[info_hash] = True
-            if len(info_hashes) >= MAX_RESULTS_PER_INDEXER:
-                log.info("found enough torrents", count=len(info_hashes))
-                return
+        indexer_results: list[Torrent] = await task
+        for torrent in indexer_results:
+            if torrent and human.score_name(search_query, torrent.title) > 0:
+                torrents[torrent.info_hash] = torrent
+                if len(torrents) >= max_results:
+                    break
 
+    for task in tasks:
+        if not task.done():
+            task.cancel()
 
-class JackettSearchError(Exception):
-    def __init__(self, message: str, status: int | None, cause: Exception | None):
-        self.message = message
-        self.status = status
-        self.cause = cause
+    return list(torrents.values())
 
 
 async def execute_search(
@@ -196,12 +160,19 @@ async def execute_search(
     params: dict[str, Any],
 ) -> list[SearchResult]:
     start_time = datetime.now()
-    response_status: int = 0
+    response_status: int = 200
     cached_response: bool = False
     try:
+        kvs: str = ":".join([f"{k}:{v}" for k, v in params.items()])
+        cache_key: str = f"jackett:indexer:{indexer}:search:{kvs}"
+        cached_results: SearchResults | None = await db.get_model(cache_key, SearchResults)
+        if cached_results:
+            cached_response = True
+            return cached_results.Results
+
         url: str = f"{jackett_url}/api/v2.0/indexers/all/results"
         with bound_contextvars(
-            search_params=params.copy(),
+            search_params=params,
             url=url,
             indexer=indexer,
         ):
@@ -222,28 +193,21 @@ async def execute_search(
                                 status=response.status,
                                 reason=response.reason,
                                 body=await response.text(),
-                                exc_info=True,
                             )
                             return []
                         response_json = await response.json()
-                except TimeoutError as e:
-                    log.error("jacket search timeout", timeout=JACKETT_TIMEOUT)
-                    raise JackettSearchError(
-                        message="jackett search timeout",
-                        status=response_status,
-                        cause=e,
-                    )
+                except TimeoutError as err:
+                    log.error("jacket search timeout", error=err, timeout=JACKETT_TIMEOUT)
+                    return []
                 except Exception as err:
-                    log.error("jacket search error", exc_info=err)
-                    raise JackettSearchError(
-                        message="jackett search error",
-                        status=response_status,
-                        cause=err,
-                    )
+                    log.error("jacket search error", error=err)
+                    return []
 
         res: SearchResults = SearchResults(
             Results=[SearchResult(**result) for result in response_json["Results"]]
         )
+        if res.Results:
+            await db.set_model(cache_key, res, timedelta(days=1))
         return res.Results
     finally:
         status = f"{response_status // 100}xx"
@@ -262,22 +226,12 @@ async def map_matched_result(
     result: SearchResult,
     search_query: SearchQuery,
     imdb: int | None,
-) -> ScoredTorrent | None:
+) -> Torrent | None:
     if imdb and result.Imdb and result.Imdb != imdb:
         log.info(
             "skipping mismatched IMDB",
             wanted=imdb,
             got=result.Imdb,
-        )
-        return None
-
-    match_score: int = human.score_name(search_query, result.Title)
-    if match_score <= 0:
-        log.info(
-            "torrent scored too low",
-            title=result.Title,
-            match_score=match_score,
-            wanted=search_query,
         )
         return None
 
@@ -291,21 +245,42 @@ async def map_matched_result(
             )
             return None
 
-    info_hash: str | None = (
-        result.InfoHash.upper()
-        if result.InfoHash
-        else (
-            await resolve_magnet_link(
-                guid=result.Guid,
-                link=result.Link,
-            )
-            if result.Link and result.Link.startswith("http")
-            else None
+    if result.InfoHash and result.MagnetUri:
+        return Torrent(
+            guid=result.Guid,
+            info_hash=result.InfoHash,
+            title=result.Title,
+            size=result.Size,
+            url=result.MagnetUri,
+            seeders=result.Seeders,
+            tracker=result.Tracker,
+            imdb=result.Imdb,
         )
-    )
 
-    if info_hash:
-        return ScoredTorrent(info_hash=info_hash, score=match_score)
+    if result.Link and result.Link.startswith("http"):
+        magnet_link: str | None = await resolve_magnet_link(guid=result.Guid, link=result.Link)
+        if not magnet_link:
+            return None
+
+        info_hash: str | None = result.InfoHash or magnet.get_info_hash(magnet_link)
+        if not info_hash:
+            log.info("Could not find info hash in magnet link", magnet=magnet_link)
+            return None
+
+        torrent: Torrent = Torrent(
+            guid=result.Guid,
+            info_hash=info_hash,
+            title=result.Title,
+            size=result.Size,
+            url=magnet_link,
+            seeders=result.Seeders,
+            tracker=result.Tracker,
+        )
+        log.info(
+            "found torrent", torrent=torrent.title, seeders=torrent.seeders, tracker=torrent.tracker
+        )
+        return torrent
+
     return None
 
 
@@ -317,17 +292,17 @@ async def resolve_magnet_link(guid: str, link: str) -> str | None:
     locally. If not we will just pass it along to RD anyway
     """
     if link.startswith("magnet"):
-        return magnet.parse_magnet_link(link)
+        return link
 
     start_time = datetime.now()
     response_status: int = 200
     cached_response: bool = False
     try:
-        cache_key: str = f"jackett:magnet:{guid}"
-        info_hash: Optional[str] = await db.get(cache_key)
-        if info_hash:
+        cache_key: str = f"jackett:magnet:{guid}:url"
+        cached_magnet: Optional[str] = await db.get(cache_key)
+        if cached_magnet:
             cached_response = True
-            return info_hash
+            return cached_magnet
 
         log.info("magnet resolve: following redirect", guid=guid, link=link)
         async with aiohttp.ClientSession() as session:
@@ -336,20 +311,18 @@ async def resolve_magnet_link(guid: str, link: str) -> str | None:
             ) as response:
                 response_status = response.status
                 if response.status == 302:
-                    if location := response.headers.get("Location", ""):
-                        info_hash = magnet.parse_magnet_link(location)
-                        log.info("magnet resolve: found redirect", guid=guid, info_hash=info_hash)
-                        await db.set(cache_key, info_hash, ttl=timedelta(weeks=8))
-                        return info_hash
-                    return None
+                    location = response.headers.get("Location", "")
+                    log.info("magnet resolve: found redirect", guid=guid, magnet=location)
+                    return location
                 else:
                     log.info("magnet resolve: no redirect found", guid=guid, status=response.status)
                     return None
-    except TimeoutError:
-        log.error("magnet resolve: timeout", guid=guid)
+        await db.set(cache_key, location)
+    except TimeoutError as err:
+        log.error("magnet resolve: timeout", guid=guid, error=err)
         return None
     except Exception as err:
-        log.error("magnet resolve error", exc_info=err)
+        log.error("magnet resolve error", error=err)
         return None
     finally:
         status = f"{response_status // 100}xx"

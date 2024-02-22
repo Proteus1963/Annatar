@@ -4,7 +4,7 @@ from hashlib import md5
 from typing import Optional
 
 import structlog
-from prometheus_client import Counter, Histogram
+from prometheus_client import Histogram
 
 from annatar import human, instrumentation, jackett
 from annatar.database import db
@@ -13,14 +13,9 @@ from annatar.debrid.providers import DebridService
 from annatar.jackett_models import Indexer, SearchQuery
 from annatar.meta.cinemeta import MediaInfo, get_media_info
 from annatar.stremio import Stream, StreamResponse
+from annatar.torrent import Torrent
 
 log = structlog.get_logger(__name__)
-
-UNIQUE_SEARCHES: Counter = Counter(
-    name="unique_searches",
-    documentation="Unique stream search counter",
-    registry=instrumentation.registry(),
-)
 
 
 async def _search(
@@ -33,10 +28,6 @@ async def _search(
     season_episode: list[int] = [],
     indexers: list[str] = [],
 ) -> StreamResponse:
-    if await db.unique_add("stream_request", f"{imdb_id}:{season_episode}"):
-        log.debug("unique search")
-        UNIQUE_SEARCHES.inc()
-
     idx: str = "-".join(sorted(indexers))
     cache_key: str = f"api:search:{type}:{imdb_id}:{season_episode}:{debrid.id()}:{idx}"
 
@@ -70,26 +61,21 @@ async def _search(
         q.season = str(season_episode[0])
         q.episode = str(season_episode[1])
 
-    found_indexers: list[Indexer | None] = [Indexer.find_by_id(i) for i in indexers]
-    async_torrents = jackett.search_indexers(
+    torrents: list[Torrent] = await jackett.search_indexers(
+        max_results=max(10, max_results),
         jackett_url=jackett_url,
         jackett_api_key=jackett_api_key,
         search_query=q,
         imdb=int(imdb_id.replace("tt", "")),
         timeout=60,
-        indexers=[i for i in found_indexers if i],
-        max_results=max_results,
+        indexers=[Indexer.find_by_id(i) for i in indexers],
     )
 
-    links: list[StreamLink] = []
-
-    async for link in debrid.get_stream_links(
-        torrents=async_torrents,
+    links: list[StreamLink] = await debrid.get_stream_links(
+        torrents=torrents,
         season_episode=season_episode,
         max_results=max_results,
-    ):
-        if human.score_by_quality(link.name) > 0:
-            links.append(link)
+    )
 
     sorted_links: list[StreamLink] = list(
         sorted(
@@ -113,7 +99,7 @@ async def _search(
         for link in sorted_links
     ]
     resp = StreamResponse(streams=streams)
-    await db.set_model(cache_key, resp, ttl=timedelta(hours=1))
+    await db.set_model(cache_key, resp, ttl=timedelta(days=7))
     return resp
 
 
@@ -121,17 +107,8 @@ REQUEST_DURATION = Histogram(
     name="api_request_duration_seconds",
     documentation="Duration of API requests in seconds",
     labelnames=["type", "debrid_service", "cached", "error"],
-    registry=instrumentation.registry(),
+    registry=instrumentation.REGISTRY,
 )
-
-
-async def get_hashes(
-    imdb_id: str,
-    limit: int = 20,
-):
-    cache_key: str = f"jackett:search:{imdb_id}"
-    res = await db.unique_list_get(cache_key)
-    return res[:limit]
 
 
 async def search(
@@ -159,7 +136,7 @@ async def search(
         )
         return res
     except Exception as e:
-        log.error("error searching", type=type, id=imdb_id, exc_info=e)
+        log.error("error searching", type=type, id=imdb_id, error=str(e))
         res = StreamResponse(streams=[], error="Error searching")
         return res
     finally:

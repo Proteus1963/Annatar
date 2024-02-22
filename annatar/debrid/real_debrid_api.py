@@ -1,12 +1,12 @@
 from datetime import datetime
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import aiohttp
 import structlog
 
 from annatar import instrumentation
-from annatar.debrid import magnet
 from annatar.debrid.rd_models import InstantFile, TorrentInfo, UnrestrictedLink
+from annatar.torrent import Torrent
 
 ROOT_URL = "https://api.real-debrid.com/rest/1.0"
 
@@ -29,19 +29,22 @@ async def make_request(
         async with aiohttp.ClientSession() as session:
             api_headers = {"Authorization": f"Bearer {debrid_token}"}
             async with session.request(method, api_url, headers=api_headers, data=body) as response:
-                status_code = f"{response.status//100}xx"
+                status_code = f"{response.status//100}xx"  # type: ignore
                 if response.status not in range(200, 300):
-                    error = True
+                    timer.labels(error="true")  # type: ignore
                     log.error(
                         "Error making request",
                         status=response.status,
                         reason=response.reason,
-                        url=api_url,
                         body=await response.text(),
                     )
                     return None
                 response_json = await response.json()
                 return response_json
+    except Exception as e:
+        log.error("Error making request", error=e)
+        error = True
+        return None
     finally:
         instrumentation.HTTP_CLIENT_REQUEST_DURATION.labels(
             client="real_debrid",
@@ -52,7 +55,7 @@ async def make_request(
         ).observe((datetime.now() - start_time).total_seconds())
 
 
-async def add_magnet(info_hash: str, debrid_token: str) -> str | None:
+async def add_magnet(magnet_link: str, debrid_token: str) -> str | None:
     """
     Adds a magnet link to RD and returns the torrent id.
     """
@@ -60,15 +63,12 @@ async def add_magnet(info_hash: str, debrid_token: str) -> str | None:
         method="post",
         url="/torrents/addMagnet",
         debrid_token=debrid_token,
-        body={"magnet": magnet.make_magnet_link(info_hash=info_hash)},
+        body={"magnet": magnet_link},
     )
     return response_json["id"] if response_json else None
 
 
-async def get_instant_availability(
-    info_hash: str,
-    debrid_token: str,
-) -> AsyncGenerator[list[InstantFile], None]:
+async def get_instant_availability(info_hash: str, debrid_token: str) -> list[InstantFile]:
     res = await make_request(
         method="GET",
         url="/torrents/instantAvailability/{info_hash}",
@@ -76,20 +76,17 @@ async def get_instant_availability(
         debrid_token=debrid_token,
     )
     if not res:
-        yield []
+        return []
 
-    # XXX This doesn't work. .get is wrong
-    for hash, obj in res.items():
-        if hash.lower() != info_hash.lower():
-            continue
-        if "rd" not in obj:
-            continue
-        for set in obj.get("rd", []):
-            cached_files = [
-                InstantFile(id=int(file_id), **file_info) for file_id, file_info in set.items()
-            ]
-            log.info("found cached files", count=len(cached_files))
-            yield cached_files
+    cached_files: list[InstantFile] = [
+        InstantFile(id=int(id_key), **file_info)
+        for value in res.values()
+        if value
+        for item in value.get("rd", [])
+        for id_key, file_info in item.items()
+    ]
+    log.info("found cached files", count=len(cached_files))
+    return cached_files
 
 
 async def list_torrents(debrid_token: str) -> list[TorrentInfo]:
@@ -119,9 +116,9 @@ async def get_torrent_info(
     return TorrentInfo(**response_json)
 
 
-async def select_torrent_files(
+async def select_torrent_file(
     torrent_id: str,
-    file_ids: list[int],
+    file_id: str,
     debrid_token: str,
     season_episode: list[int] = [],
 ) -> bool:
@@ -130,13 +127,13 @@ async def select_torrent_files(
         url="/torrents/selectFiles/{torrent_id}",
         url_values={"torrent_id": torrent_id},
         debrid_token=debrid_token,
-        body={"files": ",".join(str(f) for f in file_ids)},
+        body={"files": file_id},
     )
     return True
 
 
 async def unrestrict_link(
-    info_hash: str,
+    torrent: Torrent,
     link: str,
     debrid_token: str,
 ) -> UnrestrictedLink | None:
@@ -148,9 +145,9 @@ async def unrestrict_link(
     )
     if not response_json:
         return None
-    response_json["info_hash"] = info_hash
+    response_json["torrent"] = torrent
     unrestrict_info: UnrestrictedLink = UnrestrictedLink(**response_json)
-    log.info("Got unrestrict link", link=unrestrict_info.link, info_hash=info_hash)
+    log.info("Got unrestrict link", link=unrestrict_info.link, info_hash=torrent.info_hash)
     return unrestrict_info
 
 

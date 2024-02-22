@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Annotated, Any, Optional
 
 import structlog
-from fastapi import APIRouter, HTTPException, Path, Query, Request
+from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import RedirectResponse
 from starlette.status import HTTP_302_FOUND
 
@@ -18,8 +18,8 @@ router = APIRouter()
 
 log = structlog.get_logger(__name__)
 
-jackett_url: str = os.environ.get("JACKETT_URL", "http://85.61.137.47:9117")
-jackett_api_key: str = os.environ.get("JACKETT_API_KEY", "sro9ybsw7bign818vygiu8t4rwrtewke")
+jackett_url: str = os.environ.get("JACKETT_URL", "http://localhost:9117")
+jackett_api_key: str = os.environ.get("JACKETT_API_KEY", "")
 
 
 class MediaType(str, Enum):
@@ -54,22 +54,12 @@ async def get_manifest(request: Request) -> dict[str, Any]:
         "idPrefixes": ["tt"],
         "resources": ["stream"],
         "types": MediaType.all(),
-        "name": "Pr0T3uS",
-        "description": "Search popular torrent sites and Debrid caches for streamable content.",
+        "name": "Annatar",
+        "description": "Lord of Gifts. Search popular torrent sites and Debrid caches for streamable content.",
         "behaviorHints": {
             "configurable": True,
             "configurationRequired": False,
         },
-    }
-
-
-@router.get("/api/v2/hashes/{imdb_id:str}", description="Get hashes for a given IMDB ID")
-async def get_hashes(
-    imdb_id: Annotated[str, Path(description="IMDB ID", examples=["tt0120737"])],
-    limit: Annotated[int, Query(description="Limit results", defualt=10)],
-) -> dict[str, Any]:
-    return {
-        "hashes": await api.get_hashes(imdb_id=imdb_id, limit=limit),
     }
 
 

@@ -1,9 +1,20 @@
 import os
-from contextvars import ContextVar
 
-import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
+from opentelemetry import metrics, trace
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # type: ignore
+from opentelemetry.instrumentation.redis import RedisInstrumentor  # type: ignore
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import (
+    ConsoleMetricExporter,
+    PeriodicExportingMetricReader,
+)
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
@@ -13,35 +24,27 @@ from prometheus_client import (
     multiprocess,
 )
 
-log = structlog.get_logger()
-
-NO_CACHE = ContextVar("NO_CACHE", default=False)
-
-
-def registry() -> CollectorRegistry:
-    reg = CollectorRegistry()
-    multiprocess.MultiProcessCollector(reg)
-    return reg
-
+REGISTRY = CollectorRegistry()
+multiprocess.MultiProcessCollector(REGISTRY)
 
 Gauge(
     name="build_info",
     documentation="build information",
     multiprocess_mode="livemin",
+    registry=REGISTRY,
     labelnames=["version"],
-    registry=registry(),
 ).labels(version=os.getenv("BUILD_VERSION", "UNKNOWN")).set(1)
 
 HTTP_CLIENT_REQUEST_DURATION = Histogram(
     name="http_client_request_duration_seconds",
     documentation="Duration of Redis requests in seconds",
     labelnames=["client", "method", "url", "status_code", "error"],
-    registry=registry(),
+    registry=REGISTRY,
 )
 
 
 async def metrics_handler(request: Request):
-    data = generate_latest(registry())
+    data = generate_latest(REGISTRY)
     return Response(
         content=data,
         headers={
@@ -51,11 +54,38 @@ async def metrics_handler(request: Request):
     )
 
 
+RedisInstrumentor().instrument()  # type: ignore
+OTEL_EXPORTER_OTLP_ENDPOINT: str = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+DISABLE_OTEL: bool = bool(os.environ.get("DISABLE_OTEL", "0"))
+SAMPLE_RATE: float = float(os.environ.get("TRACING_SAMPLE_RATIO", "0.05"))
+
+if not DISABLE_OTEL:
+    if OTEL_EXPORTER_OTLP_ENDPOINT:
+        # tracing
+        provider = TracerProvider(sampler=TraceIdRatioBased(SAMPLE_RATE))
+        processor = BatchSpanProcessor(OTLPSpanExporter())
+        provider.add_span_processor(processor)
+        trace.set_tracer_provider(provider)
+        # metrics
+        meter_reader = PeriodicExportingMetricReader(OTLPMetricExporter())
+        metrics_provider = MeterProvider(metric_readers=[meter_reader])
+        metrics.set_meter_provider(metrics_provider)
+    else:
+        # traces
+        provider = TracerProvider()
+        processor = BatchSpanProcessor(ConsoleSpanExporter())
+        provider.add_span_processor(processor)
+        trace.set_tracer_provider(provider)
+        # metrics
+        meter_reader = PeriodicExportingMetricReader(ConsoleMetricExporter())
+        metrics_provider = MeterProvider(metric_readers=[meter_reader])
+        metrics.set_meter_provider(metrics_provider)
+
+
 def init():
-    return
+    pass
 
 
-def shutdown(app: FastAPI):
-    log.info("shutdown prometheus multiprocess_mode")
-    multiprocess.mark_process_dead(os.getpid())  # type: ignore
-    return
+def instrument_fastapi(app: FastAPI):
+    if not DISABLE_OTEL:
+        FastAPIInstrumentor.instrument_app(app)  # type: ignore

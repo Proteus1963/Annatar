@@ -8,8 +8,7 @@ from annatar import instrumentation, logging, middleware, routes, web
 
 logging.init()
 instrumentation.init()
-
-app = FastAPI(title="Annatar", version="0.1.0")
+app = FastAPI()
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -17,7 +16,6 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.add_middleware(middleware.Metrics)
 app.add_middleware(middleware.RequestLogger)
 app.add_middleware(middleware.RequestID)
-app.add_middleware(middleware.CacheBust)
 
 app.add_route("/metrics", instrumentation.metrics_handler)
 
@@ -47,3 +45,4 @@ async def add_CORS_header(request: Request, call_next: Any):
 
 app.include_router(routes.router)
 app.include_router(web.router)
+instrumentation.instrument_fastapi(app)

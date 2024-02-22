@@ -1,8 +1,7 @@
-from typing import AsyncGenerator
-
 from annatar.debrid import pm
 from annatar.debrid.debrid_service import DebridService
 from annatar.debrid.models import StreamLink
+from annatar.torrent import Torrent
 
 
 class PremiumizeProvider(DebridService):
@@ -23,14 +22,13 @@ class PremiumizeProvider(DebridService):
 
     async def get_stream_links(
         self,
-        torrents: AsyncGenerator[str, None],
+        torrents: list[Torrent],
         season_episode: list[int],
         max_results: int = 5,
-    ) -> AsyncGenerator[StreamLink, None]:
-        async for sl in pm.get_stream_links(
+    ) -> list[StreamLink]:
+        return await pm.get_stream_links(
             torrents=torrents,
             debrid_token=self.api_key,
             season_episode=season_episode,
             max_results=max_results,
-        ):
-            yield sl
+        )

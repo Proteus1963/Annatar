@@ -3,47 +3,20 @@ from typing import List, Optional
 
 from pydantic import BaseModel
 
-
-class ScoredTorrent(BaseModel):
-    info_hash: str
-    score: int = 0
+from annatar.torrent import Torrent
 
 
 class Torrents(BaseModel):
-    items: list[str]
+    items: list[Torrent]
 
 
 class ListIndexersResponse(BaseModel):
     pass
 
 
-class Category(BaseModel):
-    name: str
-    id: int
-
-    @staticmethod
-    def find_by_name(name: str) -> Optional["Category"]:
-        if name == "movie":
-            return MOVIES
-        elif name == "series":
-            return SERIES
-        return None
-
-
-MOVIES = Category(name="movie", id=2000)
-SERIES = Category(name="series", id=5000)
-
-
 class Indexer(BaseModel):
     id: str
     name: str
-    categories: list[Category]
-
-    def supports(self, category: str) -> bool:
-        for cat in self.categories:
-            if cat.name == category:
-                return True
-        return False
 
     @staticmethod
     def find_by_name(name: str) -> Optional["Indexer"]:
@@ -68,18 +41,12 @@ class Indexer(BaseModel):
 # and then verify on startup. Jackett will accept incorrect values though and
 # just return no results
 ALL_INDEXERS: list[Indexer] = [
-#    Indexer(name="YTS", id="yts", categories=[MOVIES]),
-#    Indexer(name="EZTV", id="eztv", categories=[SERIES]),
-#    Indexer(name="Kickass Torrents", id="kickasstorrents-ws", categories=[MOVIES, SERIES]),
-#    Indexer(name="The Pirate Bay", id="thepiratebay", categories=[MOVIES, SERIES]),
-#    Indexer(name="RARBG", id="therarbg", categories=[MOVIES, SERIES]),
-#    Indexer(name="Torrent Galaxy", id="torrentgalaxy", categories=[MOVIES, SERIES]),
-
-    Indexer(name="Il Corsaro Nero", id="ilcorsaronero", categories=[MOVIES, SERIES]),
-    Indexer(name="ItaTorrents", id="itatorrents", categories=[MOVIES, SERIES]),
-    Indexer(name="MIRCrew", id="mircrew", categories=[MOVIES, SERIES]), 
-
-    
+    Indexer(name="YTS", id="yts"),
+    Indexer(name="EZTV", id="eztv"),
+    Indexer(name="Kickass Torrents", id="kickasstorrents-ws"),
+    Indexer(name="The Pirate Bay", id="thepiratebay"),
+    Indexer(name="RARBG", id="therarbg"),
+    Indexer(name="Torrent Galaxy", id="torrentgalaxy"),
 ]
 
 

@@ -1,12 +1,11 @@
 #!/bin/bash
 set -ueo pipefail
 
-CACHE_BUST_KEY=${CACHE_BUST_KEY:-}
-SERVER_URL=${SERVER_URL:-http://85.61.137.47:9117}
+SERVER_URL=${SERVER_URL:-http://127.0.0.1:8000}
 kind=${1:-}
 term=${2:-}
 provider=${3:-premiumize}
-max_results=5
+max_results=10
 
 if [ -z "${kind}" ] || [ -z "${term}" ]; then
 	echo "Usage: $0 <kind> <term> [provider]"
@@ -27,7 +26,7 @@ config=$(cat <<-EOF | jq -c . | base64 -w0
 	"debrid_service": "${provider}",
 	"debrid_api_key": "${debrid_api_key}",
 	"max_results": ${max_results},
-	"indexers": ["Il Corsaro Nero", "ItaTorrents", "MIRCrew"]
+	"indexers": ["yts", "eztv", "kickasstorrents-ws", "thepiratebay", "therarbg", "torrentgalaxy"]
 }
 
 EOF
@@ -37,7 +36,6 @@ echo "${term}" \
 	| tr ',' '\n' \
 	| xargs -I{} -P17 \
 		timeout 30 curl \
-			-H "x-cache-bust: ${CACHE_BUST_KEY}" \
 			-SLs \
 			-D /dev/stderr \
 			-X GET \

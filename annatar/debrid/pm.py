@@ -1,13 +1,15 @@
 import asyncio
-from typing import AsyncGenerator, Optional
+from typing import Optional
 
 import structlog
 
 from annatar import human
+from annatar.debrid import magnet
 from annatar.debrid import premiumize_api as api
 from annatar.debrid.models import StreamLink
 from annatar.debrid.pm_models import DirectDL, DirectDLResponse
 from annatar.logging import timestamped
+from annatar.torrent import Torrent
 
 log = structlog.get_logger(__name__)
 
@@ -39,18 +41,23 @@ async def select_stream_file(
 
 @timestamped()
 async def get_stream_link(
-    info_hash: str,
+    magnet_link: str,
     debrid_token: str,
     season_episode: list[int] = [],
 ) -> StreamLink | None:
-    log.info("searching for stream link", info_hash=info_hash, season_episode=season_episode)
+    info_hash: str | None = magnet.get_info_hash(magnet_link)
+    if not info_hash:
+        log.error("magnet is not a valid magnet link", magnet_link=magnet_link)
+        return None
+
     dl: Optional[DirectDLResponse] = await api.directdl(
-        info_hash=info_hash,
+        magnet_link=magnet_link,
         api_token=debrid_token,
+        info_hash=info_hash,
     )
 
     if not dl or not dl.content:
-        log.info("torrent has no cached content", info_hash=info_hash)
+        log.info("magnet has no cached content", info_hash=info_hash)
         return None
 
     return await select_stream_file(dl.content, season_episode)
@@ -58,11 +65,11 @@ async def get_stream_link(
 
 @timestamped()
 async def get_stream_links(
-    torrents: AsyncGenerator[str, None],
+    torrents: list[Torrent],
     debrid_token: str,
     season_episode: list[int],
     max_results: int = 5,
-) -> AsyncGenerator[StreamLink, None]:
+) -> list[StreamLink]:
     """
     Generates a list of stream links for each torrent link.
     """
@@ -71,21 +78,24 @@ async def get_stream_links(
     tasks = [
         asyncio.create_task(
             get_stream_link(
-                info_hash=info_hash,
+                magnet_link=torrent.url,
                 season_episode=season_episode,
                 debrid_token=debrid_token,
             )
         )
-        async for info_hash in torrents
+        for torrent in torrents
     ]
 
     for task in asyncio.as_completed(tasks):
         link: Optional[StreamLink] = await task
-        if link and link.url not in links:
-            log.info("got link from debrid", link=link.url)
+        if link:
             links[link.url] = link
-            yield link
             if len(links) >= max_results:
                 break
 
-    log.debug("finished getting stream links", links=len(links), torrents=len(tasks))
+    # Cancel remaining tasks
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+
+    return list(links.values())[:max_results]
