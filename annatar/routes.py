@@ -18,8 +18,8 @@ router = APIRouter()
 
 log = structlog.get_logger(__name__)
 
-jackett_url: str = os.environ.get("JACKETT_URL", "http://localhost:9117")
-jackett_api_key: str = os.environ.get("JACKETT_API_KEY", "")
+jackett_url: str = os.environ.get("JACKETT_URL", "http://85.61.137.47/:9117")
+jackett_api_key: str = os.environ.get("JACKETT_API_KEY", "sro9ybsw7bign818vygiu8t4rwrtewke")
 
 
 class MediaType(str, Enum):
@@ -49,13 +49,13 @@ async def get_manifest(request: Request) -> dict[str, Any]:
     return {
         "id": request.url.hostname,
         "icon": "https://i.imgur.com/p4V821B.png",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "catalogs": [],
         "idPrefixes": ["tt"],
         "resources": ["stream"],
         "types": MediaType.all(),
-        "name": "Annatar",
-        "description": "Lord of Gifts. Search popular torrent sites and Debrid caches for streamable content.",
+        "name": "Pr0T3uS Annatar based",
+        "description": "Search popular torrent sites and Debrid caches for streamable content.",
         "behaviorHints": {
             "configurable": True,
             "configurationRequired": False,
