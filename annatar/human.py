@@ -6,33 +6,20 @@ from annatar.jackett_models import SearchQuery
 
 log = structlog.get_logger(__name__)
 
-PRIORITY_WORDS: list[str] = [r"\b(4K|2160p)\b", r"\b1080p\b", r"\b720p\b"]
+PRIORITY_WORDS: list[str] = [r"\b(4K|2160p)\b", r"\b1080p\b" , r"\biTA\b"]
 QUALITIES: dict[str, str] = {
     "4K": r"\b(4K|2160p)\b",
     "1080p": r"\b1080p\b",
-    "720p": r"\b720p\b",
-    "480p": r"\b480p\b",
+    "iTA": r"\biTA\b"
+
 }
 VIDEO_EXTENSIONS = [
-    "3g2",
-    "3gp",
-    "avi",
-    "flv",
-    "m2ts",
-    "m4v",
-    "mk3d",
     "mkv",
-    "mov",
-    "mp2",
     "mp4",
-    "mpe",
     "mpeg",
     "mpg",
     "mpv",
-    "ogm",
     "ts",
-    "webm",
-    "wmv",
 ]
 
 
