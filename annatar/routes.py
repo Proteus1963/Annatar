@@ -18,8 +18,8 @@ router = APIRouter()
 
 log = structlog.get_logger(__name__)
 
-jackett_url: str = os.environ.get("JACKETT_URL", "http://85.61.137.47:9117")
-jackett_api_key: str = os.environ.get("JACKETT_API_KEY", "sro9ybsw7bign818vygiu8t4rwrtewke")
+jackett_url: str = os.environ.get("JACKETT_URL", "http://localhost:9117")
+jackett_api_key: str = os.environ.get("JACKETT_API_KEY", "vgskzuqdpg74r6zkfoa5iazb6groanmd")
 
 
 class MediaType(str, Enum):
