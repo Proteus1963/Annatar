@@ -101,7 +101,8 @@ class SearchResult(BaseModel):
     InfoHash: Optional[str]
     MagnetUri: Optional[str]
     MinimumRatio: Optional[float]
-    MinimumSeedTime: Optional[str]
+   # MinimumSeedTime: Optional[str]
+    MinimumSeedTime: Optional[Union[str, int]] = 60000
     DownloadVolumeFactor: Optional[float]
     UploadVolumeFactor: Optional[float]
     Gain: Optional[float]
