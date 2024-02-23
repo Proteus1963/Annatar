@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import BaseModel
 
@@ -41,12 +41,15 @@ class Indexer(BaseModel):
 # and then verify on startup. Jackett will accept incorrect values though and
 # just return no results
 ALL_INDEXERS: list[Indexer] = [
-    Indexer(name="YTS", id="yts"),
+    #Indexer(name="YTS", id="yts"),
     Indexer(name="EZTV", id="eztv"),
-    Indexer(name="Kickass Torrents", id="kickasstorrents-ws"),
+    #Indexer(name="Kickass Torrents", id="kickasstorrents-ws"),
     Indexer(name="The Pirate Bay", id="thepiratebay"),
     Indexer(name="RARBG", id="therarbg"),
     Indexer(name="Torrent Galaxy", id="torrentgalaxy"),
+    Indexer(name="Torlock", id="torlock"),
+    Indexer(name="ItaTorrents", id="itatorrents"),
+    Indexer(name="MIRCrew", id="mircrew"),
 ]
 
 
